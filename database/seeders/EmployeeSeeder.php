@@ -9,6 +9,9 @@ class EmployeeSeeder extends Seeder
 {
     public function run(): void
     {
+        // Clear existing data first
+        Employee::truncate();
+        
         $employees = [
             [
                 'name' => 'John Doe',
