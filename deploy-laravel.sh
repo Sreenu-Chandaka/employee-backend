@@ -56,6 +56,10 @@ check_prerequisites() {
         missing_deps+=("composer")
     fi
     
+    if ! command_exists curl; then
+        missing_deps+=("curl")
+    fi
+    
     if [ ${#missing_deps[@]} -ne 0 ]; then
         print_error "Missing required dependencies: ${missing_deps[*]}"
         echo ""
@@ -78,6 +82,9 @@ check_prerequisites() {
                     ;;
                 composer)
                     echo "  • Composer: https://getcomposer.org/download/"
+                    ;;
+                curl)
+                    echo "  • cURL: Usually pre-installed, or brew install curl"
                     ;;
             esac
         done
@@ -160,22 +167,17 @@ check_git_repo() {
 create_procfile() {
     print_step "Setting up Procfile..."
     
-    if [ ! -f "Procfile" ]; then
-        cat > Procfile << 'EOF'
-web: php artisan migrate --force && php artisan config:cache && php artisan route:cache && php artisan view:cache && php -S 0.0.0.0:$PORT -t public
+    cat > Procfile << 'EOF'
+web: chmod -R 775 storage bootstrap/cache && php artisan config:cache && php artisan route:cache && php artisan view:cache && php artisan migrate --force && php -S 0.0.0.0:$PORT -t public
 EOF
-        print_success "Procfile created"
-    else
-        print_success "Procfile already exists"
-    fi
+    print_success "Procfile created/updated"
 }
 
 # Create nixpacks.toml for Laravel
 create_nixpacks_config() {
     print_step "Setting up Nixpacks configuration..."
     
-    if [ ! -f "nixpacks.toml" ]; then
-        cat > nixpacks.toml << 'EOF'
+    cat > nixpacks.toml << 'EOF'
 [phases.setup]
 nixPkgs = ["php82", "php82Extensions.pdo", "php82Extensions.pdo_mysql", "php82Extensions.mysqli", "php82Extensions.mbstring", "php82Extensions.xml", "php82Extensions.curl", "php82Extensions.zip", "php82Extensions.bcmath", "php82Extensions.tokenizer", "nodejs"]
 
@@ -185,18 +187,13 @@ cmds = ["composer install --no-dev --optimize-autoloader --no-interaction"]
 [phases.build]
 cmds = [
     "php artisan config:clear",
-    "php artisan cache:clear",
-    "npm install --production=false",
-    "npm run build"
+    "php artisan cache:clear"
 ]
 
 [start]
-cmd = "php artisan migrate --force && php artisan config:cache && php artisan route:cache && php artisan view:cache && php -S 0.0.0.0:$PORT -t public"
+cmd = "chmod -R 775 storage bootstrap/cache && php artisan config:cache && php artisan route:cache && php artisan view:cache && php artisan migrate --force && php -S 0.0.0.0:$PORT -t public"
 EOF
-        print_success "nixpacks.toml created"
-    else
-        print_success "nixpacks.toml already exists"
-    fi
+    print_success "nixpacks.toml created/updated"
 }
 
 # Update .gitignore
@@ -251,8 +248,7 @@ check_env_config() {
 create_railway_json() {
     print_step "Setting up railway.json..."
     
-    if [ ! -f "railway.json" ]; then
-        cat > railway.json << 'EOF'
+    cat > railway.json << 'EOF'
 {
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
@@ -264,10 +260,7 @@ create_railway_json() {
   }
 }
 EOF
-        print_success "railway.json created"
-    else
-        print_success "railway.json already exists"
-    fi
+    print_success "railway.json created/updated"
 }
 
 # Initialize or link Railway project
@@ -275,22 +268,37 @@ setup_railway_project() {
     print_step "Setting up Railway project..."
     
     if [ ! -f "railway.toml" ] && [ ! -d ".railway" ]; then
-        print_info "No Railway project found. Creating new project..."
+        print_info "No Railway project found."
+        echo ""
+        echo "Choose an option:"
+        echo "  1) Link to existing Railway project"
+        echo "  2) Create new Railway project"
+        read -p "Enter choice (1 or 2): " -n 1 -r
+        echo
         
-        read -p "Enter project name (or press Enter for auto-generated): " project_name
-        
-        if [ -z "$project_name" ]; then
-            railway init
+        if [[ $REPLY == "1" ]]; then
+            railway link
+            if [ $? -ne 0 ]; then
+                print_error "Failed to link Railway project"
+                return 1
+            fi
         else
-            railway init --name "$project_name"
+            read -p "Enter project name (or press Enter for auto-generated): " project_name
+            
+            if [ -z "$project_name" ]; then
+                railway init
+            else
+                railway init --name "$project_name"
+            fi
+            
+            if [ $? -ne 0 ]; then
+                print_error "Failed to initialize Railway project"
+                print_info "Try: railway link (to link to existing project)"
+                return 1
+            fi
         fi
         
-        if [ $? -ne 0 ]; then
-            print_error "Failed to initialize Railway project"
-            return 1
-        fi
-        
-        print_success "Railway project initialized"
+        print_success "Railway project configured"
     else
         print_success "Railway project already configured"
     fi
@@ -310,18 +318,9 @@ add_database() {
         print_info "You can manually add MySQL from Railway dashboard"
     else
         print_success "MySQL database added"
+        print_info "Waiting 5 seconds for database to initialize..."
+        sleep 5
     fi
-    
-    print_info "Configure these in Railway environment variables:"
-    echo "  APP_KEY=<will be generated>"
-    echo "  APP_ENV=production"
-    echo "  APP_DEBUG=false"
-    echo "  DB_CONNECTION=mysql"
-    echo "  DB_HOST=\${MYSQLHOST}"
-    echo "  DB_PORT=\${MYSQLPORT}"
-    echo "  DB_DATABASE=\${MYSQLDATABASE}"
-    echo "  DB_USERNAME=\${MYSQLUSER}"
-    echo "  DB_PASSWORD=\${MYSQLPASSWORD}"
 }
 
 # Set Railway environment variables
@@ -353,7 +352,6 @@ set_railway_variables() {
     railway variables --set 'DB_PASSWORD=${MYSQLPASSWORD}' 2>/dev/null
     
     print_success "Environment variables configured"
-    print_info "You can view/edit variables with: railway variables"
 }
 
 # Deploy to Railway
@@ -366,16 +364,12 @@ deploy_project() {
     if [ $? -ne 0 ]; then
         print_error "Deployment failed"
         print_info "Check the error messages above for details"
-        print_info "Common issues:"
-        echo "  • Missing environment variables (APP_KEY, DB credentials)"
-        echo "  • Syntax errors in code"
-        echo "  • composer.json issues"
-        echo "  • Missing PHP extensions"
-        echo "  • Database connection issues"
         return 1
     fi
     
     print_success "Deployment successful!"
+    print_info "Waiting 10 seconds for service to start..."
+    sleep 10
     return 0
 }
 
@@ -383,47 +377,153 @@ deploy_project() {
 get_deployment_url() {
     print_step "Retrieving deployment URL..."
     
-    local url=$(railway domain 2>/dev/null)
+    local url=$(railway domain 2>/dev/null | grep -oE '[a-z0-9-]+\.up\.railway\.app' | head -1)
     
     if [ -z "$url" ]; then
         print_info "No domain configured yet. Generating domain..."
         railway domain
-        url=$(railway domain 2>/dev/null)
+        sleep 2
+        url=$(railway domain 2>/dev/null | grep -oE '[a-z0-9-]+\.up\.railway\.app' | head -1)
     fi
     
     if [ ! -z "$url" ]; then
-        print_success "Your Laravel application is deployed at:"
-        echo -e "${GREEN}🌍 https://$url${NC}"
+        echo "$url"
+    else
+        echo ""
+    fi
+}
+
+# Test API endpoints
+test_apis() {
+    local base_url=$1
+    
+    print_step "Testing API Endpoints..."
+    
+    if [ -z "$base_url" ]; then
+        print_error "No deployment URL found. Cannot test APIs."
+        return 1
+    fi
+    
+    echo ""
+    print_info "Base URL: https://$base_url"
+    echo ""
+    
+    # Test 1: Root endpoint
+    print_info "Test 1: Testing root endpoint (GET /)"
+    local response=$(curl -s -o /dev/null -w "%{http_code}" "https://$base_url/" --max-time 10)
+    if [ "$response" == "200" ]; then
+        print_success "Root endpoint: ✓ (HTTP $response)"
+    else
+        print_warning "Root endpoint: HTTP $response"
+    fi
+    echo ""
+    
+    # Test 2: /test endpoint
+    print_info "Test 2: Testing /test endpoint (GET /test)"
+    local test_response=$(curl -s "https://$base_url/test" --max-time 10)
+    local test_code=$(curl -s -o /dev/null -w "%{http_code}" "https://$base_url/test" --max-time 10)
+    
+    if [ "$test_code" == "200" ]; then
+        print_success "/test endpoint: ✓ (HTTP $test_code)"
+        echo "Response: $test_response"
+    else
+        print_error "/test endpoint: ✗ (HTTP $test_code)"
+        if [ "$test_code" == "500" ]; then
+            print_info "500 Error detected. Check logs with: railway logs"
+        fi
+    fi
+    echo ""
+    
+    # Test 3: API employees list
+    print_info "Test 3: Testing employees API (GET /api/employees)"
+    local api_response=$(curl -s -w "\n%{http_code}" "https://$base_url/api/employees" --max-time 10)
+    local api_body=$(echo "$api_response" | head -n -1)
+    local api_code=$(echo "$api_response" | tail -n 1)
+    
+    if [ "$api_code" == "200" ]; then
+        print_success "Employees API: ✓ (HTTP $api_code)"
+        echo "Response: $api_body" | head -c 500
+        if [ ${#api_body} -gt 500 ]; then
+            echo "... (truncated)"
+        fi
+    else
+        print_error "Employees API: ✗ (HTTP $api_code)"
+        if [ "$api_code" == "500" ]; then
+            print_info "Database connection might be failing"
+        fi
+    fi
+    echo ""
+    
+    # Test 4: Check database connectivity (if test endpoint works)
+    if [ "$test_code" == "200" ]; then
+        print_info "Test 4: Checking database connectivity"
+        
+        # Try to create a test employee (POST)
+        local create_response=$(curl -s -w "\n%{http_code}" -X POST "https://$base_url/api/employees" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            -d '{"name":"Test Employee","email":"test@example.com","position":"Tester"}' \
+            --max-time 10 2>/dev/null)
+        
+        local create_code=$(echo "$create_response" | tail -n 1)
+        
+        if [ "$create_code" == "201" ] || [ "$create_code" == "200" ]; then
+            print_success "Database connectivity: ✓ (Employee created)"
+        elif [ "$create_code" == "422" ]; then
+            print_warning "Database seems OK, but validation failed (expected)"
+        else
+            print_warning "Database connectivity: Uncertain (HTTP $create_code)"
+        fi
+    fi
+    
+    echo ""
+    echo -e "${BLUE}════════════════════════════════════════${NC}"
+    print_info "Test Summary:"
+    echo "  • Root URL: https://$base_url"
+    echo "  • Test endpoint: https://$base_url/test"
+    echo "  • API endpoint: https://$base_url/api/employees"
+    echo ""
+    
+    if [ "$test_code" != "200" ]; then
+        print_warning "Some tests failed. Recommended actions:"
+        echo "  1. Check logs: railway logs"
+        echo "  2. Verify environment variables: railway variables"
+        echo "  3. Check database is running: railway status"
+        echo "  4. Enable debug mode temporarily:"
+        echo "     railway variables --set APP_DEBUG=true"
+        echo "     railway up"
     fi
 }
 
 # Show logs
 show_logs() {
     print_step "Recent deployment logs:"
-    railway logs --limit 30
+    railway logs --limit 50
 }
 
-# Post-deployment checks
+# Post-deployment info
 post_deployment_info() {
     echo ""
     echo -e "${YELLOW}╔════════════════════════════════════════════╗${NC}"
-    echo -e "${YELLOW}║     Important Post-Deployment Steps       ║${NC}"
+    echo -e "${YELLOW}║     Important Post-Deployment Info        ║${NC}"
     echo -e "${YELLOW}╚════════════════════════════════════════════╝${NC}"
     echo ""
-    print_info "1. Make sure APP_URL is set in Railway variables:"
-    echo "   railway variables --set APP_URL=https://your-domain.railway.app"
+    print_info "Useful Railway commands:"
+    echo "  • railway logs           - View application logs"
+    echo "  • railway logs --follow  - Stream logs in real-time"
+    echo "  • railway open           - Open Railway dashboard"
+    echo "  • railway up             - Deploy again"
+    echo "  • railway variables      - View/edit environment variables"
+    echo "  • railway status         - Check service status"
     echo ""
-    print_info "2. Check if migrations ran successfully in the logs"
-    echo ""
-    print_info "3. If you have a frontend (React/Vue), build it:"
-    echo "   npm run build"
-    echo ""
-    print_info "4. For storage/public files, you may need to:"
-    echo "   php artisan storage:link (in Railway)"
-    echo ""
-    print_info "5. Check your deployment:"
-    echo "   railway logs"
-    echo "   railway open"
+    print_info "Debugging tips:"
+    echo "  • If you see 500 errors, check: railway logs"
+    echo "  • To see detailed errors temporarily:"
+    echo "    railway variables --set APP_DEBUG=true"
+    echo "    railway up"
+    echo "  • To run artisan commands:"
+    echo "    railway run php artisan migrate"
+    echo "    railway run php artisan tinker"
 }
 
 # Main execution
@@ -456,7 +556,6 @@ main() {
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         add_database
-        sleep 2
         set_railway_variables
     fi
     
@@ -466,8 +565,24 @@ main() {
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         deploy_project || exit 1
-        get_deployment_url
         
+        # Get deployment URL
+        deployment_url=$(get_deployment_url)
+        
+        if [ ! -z "$deployment_url" ]; then
+            print_success "Your Laravel application is deployed at:"
+            echo -e "${GREEN}🌍 https://$deployment_url${NC}"
+            
+            # Test APIs
+            echo ""
+            read -p "Do you want to test the API endpoints? (y/n): " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                test_apis "$deployment_url"
+            fi
+        fi
+        
+        # Show logs option
         echo ""
         read -p "Show deployment logs? (y/n): " -n 1 -r
         echo
@@ -483,12 +598,6 @@ main() {
     
     echo ""
     print_success "Deployment complete! 🚀"
-    print_info "Useful commands:"
-    echo "  • railway logs          - View logs"
-    echo "  • railway open          - Open dashboard"
-    echo "  • railway up            - Deploy again"
-    echo "  • railway variables     - Manage environment variables"
-    echo "  • railway run <cmd>     - Run artisan commands"
 }
 
 # Run main function
